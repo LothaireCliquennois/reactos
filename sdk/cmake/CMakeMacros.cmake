@@ -863,6 +863,9 @@ function(create_registry_hives)
     if(SARCH STREQUAL "xbox")
         list(APPEND _livecd_inf_files
             ${CMAKE_SOURCE_DIR}/boot/bootdata/hiveinst_xbox.inf)
+    elseif(SARCH STREQUAL "pc98")
+        list(APPEND _livecd_inf_files
+            ${CMAKE_SOURCE_DIR}/boot/bootdata/hiveinst_pc98.inf)
     else()
         list(APPEND _livecd_inf_files
             ${CMAKE_SOURCE_DIR}/boot/bootdata/hiveinst.inf)
@@ -974,3 +977,13 @@ function(add_rostests_file)
         endif()
     endif()
 endfunction()
+
+if(PCH)
+    macro(add_pch _target _pch _skip_list)
+        target_precompile_headers(${_target} PRIVATE ${_pch})
+        set_source_files_properties(${_skip_list} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    endmacro()
+else()
+    macro(add_pch _target _pch _skip_list)
+    endmacro()
+endif()

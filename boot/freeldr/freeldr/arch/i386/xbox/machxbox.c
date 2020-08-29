@@ -17,10 +17,15 @@
  */
 
 #include <freeldr.h>
+#include <drivers/xbox/superio.h>
 
 #include <debug.h>
 DBG_DEFAULT_CHANNEL(HWDETECT);
 
+#define MAX_XBOX_COM_PORTS    2
+
+extern PVOID FrameBuffer;
+extern ULONG FrameBufferSize;
 
 BOOLEAN
 XboxFindPciBios(PPCI_REGISTRY_INFO BusData)
@@ -49,30 +54,19 @@ XboxGetSerialPort(ULONG Index, PULONG Irq)
     static const UCHAR Device[MAX_XBOX_COM_PORTS] = {LPC_DEVICE_SERIAL_PORT_1, LPC_DEVICE_SERIAL_PORT_2};
     ULONG ComBase = 0;
 
-    // Enter Configuration
-    WRITE_PORT_UCHAR((PUCHAR)LPC_IO_BASE, LPC_ENTER_CONFIG_KEY);
+    LpcEnterConfig();
 
     // Select serial device
-    WRITE_PORT_UCHAR((PUCHAR)LPC_IO_BASE, LPC_CONFIG_DEVICE_NUMBER);
-    WRITE_PORT_UCHAR((PUCHAR)(LPC_IO_BASE + 1), Device[Index]);
+    LpcWriteRegister(LPC_CONFIG_DEVICE_NUMBER, Device[Index]);
 
     // Check if selected device is active
-    WRITE_PORT_UCHAR((PUCHAR)LPC_IO_BASE, LPC_CONFIG_DEVICE_ACTIVATE);
-    if (READ_PORT_UCHAR((PUCHAR)(LPC_IO_BASE + 1)) == 1)
+    if (LpcReadRegister(LPC_CONFIG_DEVICE_ACTIVATE) == 1)
     {
-        // Read LSB
-        WRITE_PORT_UCHAR((PUCHAR)LPC_IO_BASE, LPC_CONFIG_DEVICE_BASE_ADDRESS_LOW);
-        ComBase = READ_PORT_UCHAR((PUCHAR)(LPC_IO_BASE + 1));
-        // Read MSB
-        WRITE_PORT_UCHAR((PUCHAR)LPC_IO_BASE, LPC_CONFIG_DEVICE_BASE_ADDRESS_HIGH);
-        ComBase |= (READ_PORT_UCHAR((PUCHAR)(LPC_IO_BASE + 1)) << 8);
-        // Read IRQ
-        WRITE_PORT_UCHAR((PUCHAR)LPC_IO_BASE, LPC_CONFIG_DEVICE_INTERRUPT);
-        *Irq = READ_PORT_UCHAR((PUCHAR)(LPC_IO_BASE + 1));
+        ComBase = LpcGetIoBase();
+        *Irq = LpcGetIrqPrimary();
     }
 
-    // Exit Configuration
-    WRITE_PORT_UCHAR((PUCHAR)LPC_IO_BASE, LPC_EXIT_CONFIG_KEY);
+    LpcExitConfig();
 
     return ComBase;
 }
@@ -160,6 +154,56 @@ XboxGetHarddiskConfigurationData(UCHAR DriveNumber, ULONG* pSize)
     return PartialResourceList;
 }
 
+static VOID
+DetectDisplayController(PCONFIGURATION_COMPONENT_DATA BusKey)
+{
+    CHAR Buffer[80];
+    PCONFIGURATION_COMPONENT_DATA ControllerKey;
+    PCM_PARTIAL_RESOURCE_LIST PartialResourceList;
+    PCM_PARTIAL_RESOURCE_DESCRIPTOR PartialDescriptor;
+    ULONG Size;
+
+    if (FrameBufferSize == 0)
+        return;
+
+    strcpy(Buffer, "NV2A Framebuffer");
+
+    Size = sizeof(CM_PARTIAL_RESOURCE_LIST);
+    PartialResourceList = FrLdrHeapAlloc(Size, TAG_HW_RESOURCE_LIST);
+    if (PartialResourceList == NULL)
+    {
+        ERR("Failed to allocate resource descriptor\n");
+        return;
+    }
+    memset(PartialResourceList, 0, Size);
+
+    /* Initialize resource descriptor */
+    PartialResourceList->Version = 1;
+    PartialResourceList->Revision = 1;
+    PartialResourceList->Count = 1;
+
+    /* Set Memory */
+    PartialDescriptor = &PartialResourceList->PartialDescriptors[0];
+    PartialDescriptor->Type = CmResourceTypeMemory;
+    PartialDescriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+    PartialDescriptor->Flags = CM_RESOURCE_MEMORY_READ_WRITE;
+    PartialDescriptor->u.Memory.Start.LowPart = (ULONG_PTR)FrameBuffer & 0x0FFFFFFF;
+    PartialDescriptor->u.Memory.Length = FrameBufferSize;
+
+    FldrCreateComponentKey(BusKey,
+                           ControllerClass,
+                           DisplayController,
+                           0x0,
+                           0x0,
+                           0xFFFFFFFF,
+                           Buffer,
+                           PartialResourceList,
+                           Size,
+                           &ControllerKey);
+
+    TRACE("Created key: DisplayController\\0\n");
+}
+
 static
 VOID
 DetectIsaBios(PCONFIGURATION_COMPONENT_DATA SystemKey, ULONG *BusNumber)
@@ -202,6 +246,7 @@ DetectIsaBios(PCONFIGURATION_COMPONENT_DATA SystemKey, ULONG *BusNumber)
     /* Detect ISA/BIOS devices */
     DetectBiosDisks(SystemKey, BusKey);
     DetectSerialPorts(BusKey, XboxGetSerialPort, MAX_XBOX_COM_PORTS);
+    DetectDisplayController(BusKey);
 
     /* FIXME: Detect more ISA devices */
 }
@@ -232,6 +277,7 @@ XboxHwDetect(VOID)
 
     /* Create the 'System' key */
     FldrCreateSystemKey(&SystemKey);
+    FldrSetIdentifier(SystemKey, "Original Xbox (PC/AT like)");
 
     GetHarddiskConfigurationData = XboxGetHarddiskConfigurationData;
     FindPciBios = XboxFindPciBios;
